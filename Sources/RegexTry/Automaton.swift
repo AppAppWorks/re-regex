@@ -9,7 +9,11 @@ struct Automaton {
     let groupCount: Int
     let operation: Operation
     
-    init(groupCount: Int, operations: Operation...) {
+    init(groupCount: Int, _ operations: Operation...) {
+        self.init(groupCount: groupCount, operations: operations)
+    }
+    
+    init(groupCount: Int, operations: [Operation]) {
         assert(!operations.isEmpty)
         
         self.groupCount = groupCount
@@ -19,12 +23,13 @@ struct Automaton {
     func process(text: String) -> [[Range<Int>?]] {
         let utf8s = Array(text.utf8)
         var bytes = utf8s.dropFirst(0)
-        var groups = Result.Groups()
-        var operation = operation
-        
+        var groups = Result.Groups(repeating: nil, count: groupCount + 1)
+                
         var matches = [Result.Groups]()
         
         while !bytes.isEmpty {
+            var operation = operation
+            
             switch operation.process(byteStream: bytes, groups: &groups) {
             case let .success(newStream):
                 groups[0] = bytes.startIndex..<newStream.startIndex
@@ -36,19 +41,13 @@ struct Automaton {
             bytes.removeFirst()
         }
         
-        return matches.map { match in
-            var groups = [Range<Int>?](repeating: nil, count: groupCount + 1)
-            for (key, value) in match {
-                groups[key] = value
-            }
-            return groups
-        }
+        return matches
     }
 }
 
 extension Automaton {
     enum Result {
-        typealias Groups = [Int : Range<Int>]
+        typealias Groups = [Range<Int>?]
         
         case failed
         case success(_ byteStream: ArraySlice<UInt8>)
@@ -69,10 +68,10 @@ extension Automaton {
         
         var isCompleted = false
         
-        var operationStack = OperationStack()
+        var timeMachine = TimeMachine()
         
         var canReuse: Bool {
-            !isCompleted || !operationStack.isEmpty
+            !isCompleted || !timeMachine.isEmpty
         }
         
         func followers() -> I {
@@ -164,10 +163,10 @@ extension Automaton {
         
         var isCompleted = false
         
-        var operationStack = OperationStack()
+        var timeMachine = TimeMachine()
         
         var canReuse: Bool {
-            !isCompleted || !operationStack.isEmpty
+            !isCompleted || !timeMachine.isEmpty
         }
         
         func followers() -> I {
@@ -180,6 +179,8 @@ extension Automaton {
     }
         
     indirect enum Operation {
+        case start
+        case end
         case bytes(_ pattern: [UInt8])
         case match(_ filter: (UInt8) -> Bool)
         case notMatch(_ filter: (UInt8) -> Bool)
@@ -212,69 +213,89 @@ extension Automaton {
                 result = .success(byteStream)
             case .none:
                 return .failed
+            case .start:
+                result = byteStream.startIndex == 0 ? .success(byteStream) : .failed
+            case .end:
+                result = byteStream.isEmpty ? .success(byteStream) : .failed
             case .bytes(let pattern):
                 result = byteStream.starts(with: pattern) ? .success(byteStream.dropFirst(pattern.count)) : .failed
             case .match(let filter):
                 result = filter(byteStream.first!) ? .success(byteStream.dropFirst()) : .failed
             case .notMatch(let filter):
                 result = filter(byteStream.first!) ? .failed : .success(byteStream.dropFirst())
-            case .or(var branches):
-                var newBranches = branches.dropFirst(0)
-                
-                while !newBranches.isEmpty {
-                    var branch = newBranches.removeFirst()
-                    
-                    repeat {
-                        let result = branch.process(byteStream: byteStream, groups: &groups)
-                                                                
-                        if case .success = result {
-                            if case .none = branch {
-                                if newBranches.isEmpty {
-                                    self = .none
-                                } else {
-                                    self = .or(Array(newBranches))
-                                }
-                            } else {
-                                branches[0] = branch
-                                self = .or(branches)
-                            }
-                            
-                            return result
-                        } else if case .none = branch {
-                            break
-                        }
-                    } while true
-                }
-                
-                self = .none
-                
-                return .failed
-            case .group(var grouper, let order):
-                defer {
-                    self = grouper.canReuse ? .group(grouper, order) : .none
-                }
-                
-                switch grouper.process(byteStream: byteStream, groups: &groups) {
-                case let .success(newStream):
-                    if let order {
-                        groups[order] = byteStream.startIndex..<newStream.startIndex
-                    }
-                    return .success(newStream)
-                case .failed:
-                    return .failed
-                }
-            case var .repeater(repeater):
-                defer {
-                    self = repeater.canReuse ? .repeater(repeater) : .none
-                }
-                
-                let result = repeater.process(byteStream: byteStream, groups: &groups)
-                self = .repeater(repeater)
-                return result
+            case .or(let branches):
+                return handleOr(branches: branches, byteStream: byteStream, groups: &groups)
+            case let .group(grouper, order):
+                return handleGroup(grouper: grouper, order: order, byteStream: byteStream, groups: &groups)
+            case let .repeater(repeater):
+                return handleRepeater(repeater: repeater, byteStream: byteStream, groups: &groups)
             }
             
             self = .none
             return result
+        }
+        
+        mutating func handleRepeater(repeater: Repeater, byteStream: ArraySlice<UInt8>, groups: inout Result.Groups) -> Result {
+            var repeater = repeater
+            defer {
+                self = repeater.canReuse ? .repeater(repeater) : .none
+            }
+            
+            let result = repeater.process(byteStream: byteStream, groups: &groups)
+            self = .repeater(repeater)
+            return result
+        }
+        
+        mutating func handleGroup(grouper: Grouper, order: Int?, byteStream: ArraySlice<UInt8>, groups: inout Result.Groups) -> Result {
+            var grouper = grouper
+            
+            defer {
+                self = grouper.canReuse ? .group(grouper, order) : .none
+            }
+            
+            switch grouper.process(byteStream: byteStream, groups: &groups) {
+            case let .success(newStream):
+                if let order {
+                    groups[order] = byteStream.startIndex..<newStream.startIndex
+                }
+                return .success(newStream)
+            case .failed:
+                return .failed
+            }
+        }
+        
+        mutating func handleOr(branches: [Operation], byteStream: ArraySlice<UInt8>, groups: inout Result.Groups) -> Result {
+            var branches = branches
+            var newBranches = branches.dropFirst(0)
+            
+            while !newBranches.isEmpty {
+                var branch = newBranches.removeFirst()
+                
+                repeat {
+                    let result = branch.process(byteStream: byteStream, groups: &groups)
+                                                            
+                    if case .success = result {
+                        if case .none = branch {
+                            if newBranches.isEmpty {
+                                self = .none
+                            } else {
+                                self = .or(Array(newBranches))
+                            }
+                        } else {
+                            branches[0] = branch
+                            self = .or(branches)
+                        }
+                        
+                        return result
+                    } else if case .none = branch {
+                        break
+                    }
+                } while true
+            }
+            
+            self = .none
+            
+            return .failed
         }
     }
 }
@@ -286,23 +307,25 @@ protocol Sequencer<I> {
      
     associatedtype I : IteratorProtocol<Operation> & Greediness
     
-    typealias OperationStack = [(multiModal: Operation, followers: I?, progress: ArraySlice<UInt8>)]
+    typealias TimeMachine = [(multiModal: Operation, followers: I?, progress: ArraySlice<UInt8>, groups: Groups)]
     
     func followers() -> I
     
     var canReuse: Bool { get }
     
-    var operationStack: OperationStack { get set }
+    var timeMachine: TimeMachine { get set }
     
     mutating func complete()
 }
 
 extension Sequencer {
     mutating func processVariant(_ variant: inout Operation, progress: ArraySlice<UInt8>, groups: inout Groups) -> SequencerVariantProgress {
+        let oldGroups = groups
+        
         switch variant.process(byteStream: progress, groups: &groups) {
         case let .success(newStream):
             if !variant.isNone {
-                operationStack.append((variant, nil, progress))
+                timeMachine.append((variant, nil, progress, oldGroups))
             }
             
             return .completed(newStream)
@@ -312,19 +335,21 @@ extension Sequencer {
     }
     
     mutating func processVariant(_ variant: inout Operation, progress: ArraySlice<UInt8>, followers: inout I, groups: inout Groups) -> SequencerVariantProgress {
+        let oldGroups = groups
+        
         switch variant.process(byteStream: progress, groups: &groups) {
         case let .success(newStream):
             if !variant.isNone {
-                operationStack.append((variant, followers, progress))
+                timeMachine.append((variant, followers, progress, oldGroups))
             }
             
-            let isCompulsory = followers.isAtomic            
+            let isAtomic = followers.isAtomic            
             if let next = followers.next() {
-                if !isCompulsory {
-                    operationStack.insert((.noOp, nil, newStream), at: operationStack.count - 1)
+                if !isAtomic {
+                    timeMachine.insert((.noOp, nil, newStream, groups), at: timeMachine.count - 1)
                 }
                 
-                operationStack.append((next, followers, newStream))
+                timeMachine.append((next, followers, newStream, groups))
                 return .inProgress
             } else {
                 return .completed(newStream)
@@ -335,20 +360,21 @@ extension Sequencer {
     }
     
     mutating func process(operation: inout Operation, progress: inout ArraySlice<UInt8>, followers: inout I, groups: inout Groups) -> SequencerProgress {
+        let oldGroups = groups
+        
         switch operation.process(byteStream: progress, groups: &groups) {
         case let .success(newStream):
-//            print(followers)
             if !followers.isAtomic && followers.hasNext {
-                operationStack.append((.noOp, nil, newStream))
+                timeMachine.append((.noOp, nil, newStream, groups))
             }
             
             if !operation.isNone {
-                operationStack.append((operation, followers, progress))
+                timeMachine.append((operation, followers, progress, oldGroups))
                                         
                 guard let nextOperation = followers.next() else {
                     return .completed(newStream)
                 }
-                operationStack.append((nextOperation, followers, newStream))
+                timeMachine.append((nextOperation, followers, newStream, groups))
                 
                 return .inProgress(variantMet: true)
             } else {
@@ -361,19 +387,21 @@ extension Sequencer {
     }
     
     mutating func processStack(groups: inout Groups) -> Result {
-        assert(!operationStack.isEmpty)
+        assert(!timeMachine.isEmpty)
 
-        while !operationStack.isEmpty {
-            var (operation, followers, progress) = operationStack.removeLast()
+        while !timeMachine.isEmpty {
+            var (operation, followers, progress, oldGroups) = timeMachine.removeLast()
                                     
             if var followers {
-                switch processVariant(&operation, progress: progress, followers: &followers, groups: &groups) {
+                switch processVariant(&operation, progress: progress, followers: &followers, groups: &oldGroups) {
                 case let .completed(newStream):
+                    groups = oldGroups
                     return .success(newStream)
                 case .failed:
-                    while !operation.isNone {
-                        switch processVariant(&operation, progress: progress, followers: &followers, groups: &groups) {
+                    while !operation.isNone && !progress.isEmpty {
+                        switch processVariant(&operation, progress: progress, followers: &followers, groups: &oldGroups) {
                         case let .completed(newStream):
+                            groups = oldGroups
                             return .success(newStream)
                         case .failed:
                             continue
@@ -385,13 +413,15 @@ extension Sequencer {
                     continue
                 }
             } else {
-                switch processVariant(&operation, progress: progress, groups: &groups) {
+                switch processVariant(&operation, progress: progress, groups: &oldGroups) {
                 case let .completed(newStream):
+                    groups = oldGroups
                     return .success(newStream)
                 case .failed:
-                    while !operation.isNone {
-                        switch processVariant(&operation, progress: progress, groups: &groups) {
+                    while !operation.isNone && !progress.isEmpty {
+                        switch processVariant(&operation, progress: progress, groups: &oldGroups) {
                         case let .completed(newStream):
+                            groups = oldGroups
                             return .success(newStream)
                         case .failed:
                             continue
@@ -417,13 +447,14 @@ extension Sequencer {
             complete()
         }
         
-        guard operationStack.isEmpty else {
+        guard timeMachine.isEmpty else {
             return processStack(groups: &groups)
         }
         
         var byteStream = byteStream
         var followers = self.followers()
         
+    main:
         while var operation = followers.next() {
             switch process(operation: &operation, progress: &byteStream, followers: &followers, groups: &groups) {
             case let .completed(newStream):
@@ -434,7 +465,7 @@ extension Sequencer {
                     complete()
                     return .failed
                 } else {
-                    while !operation.isNone {
+                    while !operation.isNone && !byteStream.isEmpty {
                         switch process(operation: &operation, progress: &byteStream, followers: &followers, groups: &groups) {
                         case let .completed(newStream):
                             return .success(newStream)
@@ -444,7 +475,7 @@ extension Sequencer {
                             if variantMet {
                                 return processStack(groups: &groups)
                             } else {
-                                break
+                                continue main
                             }
                         }
                     }
