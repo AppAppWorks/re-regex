@@ -6,43 +6,43 @@
 //
 
 public enum Lexer {
-    static func handleByte(worker: inout Worker, ret: inout [Lexed], byte: UInt8, offset: Int) throws {
+    static func handleGrapheme<G>(worker: inout Worker<G>, ret: inout [Lexed<G>], grapheme: G, offset: Int) throws {
         if !worker.composite.isEmpty {
-            try handleComposite(worker: &worker, ret: &ret, byte: byte, offset: offset)
-        } else if let result = try worker.handleByte(byte, offset: offset) {
+            try handleComposite(worker: &worker, ret: &ret, grapheme: grapheme, offset: offset)
+        } else if let result = try worker.handleGrapheme(grapheme, offset: offset) {
             ret.append(result)
 //            print("offset(\(offset)): intermediates: \(worker.intermediates), last: \((ret.last?.lexeme)?.description ?? "null")")
         }
     }
 
     
-    static func handleComposite(worker: inout Worker, ret: inout [Lexed], byte: UInt8, offset: Int) throws {
-        guard let compositeResult = worker.handleComposite(newByte: byte, offset: offset) else {
+    static func handleComposite<G>(worker: inout Worker<G>, ret: inout [Lexed<G>], grapheme: G, offset: Int) throws {
+        guard let compositeResult = worker.handleComposite(newGrapheme: grapheme, offset: offset) else {
             return;
         }
         
         ret.append(compositeResult.composite)
 //        print("offset(\(offset)): intermediates: \(worker.intermediates), last: \((ret.last?.lexeme)?.description ?? "null")")
         
-        if let (otherBytes, otherOffset) = compositeResult.other {
-            for (i, oldByte) in otherBytes.enumerated() {
-                try handleByte(worker: &worker, ret: &ret, byte: oldByte, offset: otherOffset + i)
+        if let (otherGraphemes, otherOffset) = compositeResult.other {
+            for (i, oldGrapheme) in otherGraphemes.enumerated() {
+                try handleGrapheme(worker: &worker, ret: &ret, grapheme: oldGrapheme, offset: otherOffset + i)
             }
         }
     }
     
-    struct Worker {
-        var composite = [UInt8]()
-        var other = [UInt8]()
+    struct Worker<G : Grapheme> {
+        var composite = [G]()
+        var other = [G]()
         var intermediates = [Intermediate]()
     }
 }
 
 public extension Lexer {
-    typealias Lexed = (lexeme: Lexeme, offset: Int)
+    typealias Lexed<G : Grapheme> = (lexeme: Lexeme<G>, offset: Int)
     
-    struct LexerError : Error {
-        let lexeme: Lexeme
+    struct LexerError<G : Grapheme> : Error {
+        let lexeme: Lexeme<G>
         let context: Context
         let offset: Int
         
@@ -55,18 +55,27 @@ public extension Lexer {
         }
     }
     
-    static func lex(s: String) throws -> [Lexed]  {
-        var ret = [(lexeme: Lexeme, offset: Int)]()
-        ret.reserveCapacity(s.utf8.count)
+    static func lexUnicode(s: String) throws -> [Lexed<Character>] {
+        try lex(s: s)
+    }
+    
+    static func lexAscii(s: String) throws -> [Lexed<UInt8>] {
+        try lex(s: s)
+    }
+    
+    static func lex<G>(s: String) throws -> [Lexed<G>]  {
+        var ret = [Lexed<G>]()
+        let graphemes = G.convertToGraphemes(s: s)
+        ret.reserveCapacity(graphemes.count)
         
-        var worker = Worker()
+        var worker = Worker<G>()
         
-        for (offset, byte) in s.utf8.enumerated() {
-            try handleByte(worker: &worker, ret: &ret, byte: byte, offset: offset)
+        for (offset, grapheme) in graphemes.enumerated() {
+            try handleGrapheme(worker: &worker, ret: &ret, grapheme: grapheme, offset: offset)
         }
         
         if let intermediate = worker.intermediates.last {
-            let context: LexerError.Context =
+            let context: LexerError<G>.Context =
             switch intermediate {
             case .grouping:
                 .grouping
@@ -78,12 +87,14 @@ public extension Lexer {
                 .repeating
             }
             
-            throw LexerError(byte: 0, context: context, offset: s.utf8.count)
+            throw LexerError(grapheme: .zero, context: context, offset: graphemes.count)
         }
         
         // TODO: - tidying up the flushing of the last bytes
+        
+        
         if !worker.composite.isEmpty {
-            try handleComposite(worker: &worker, ret: &ret, byte: .init(ascii: "*"), offset: s.utf8.count)
+            try handleComposite(worker: &worker, ret: &ret, grapheme: .init(ascii: "*"), offset: s.utf8.count)
         }
         
         return ret
@@ -98,27 +109,29 @@ extension Lexer.Worker {
         case repeating
     }
     
-    typealias CompositeResult = ((composite: (Lexeme, Int), other: ([UInt8], Int)?))?
+    typealias CompositeResult = ((composite: (Lexeme<G>, Int), other: ([G], Int)?))?
+    typealias Lexed = Lexer.Lexed<G>
+    typealias Error = Lexer.LexerError<G>
     
-    mutating func handleByte(_ newByte: UInt8, offset: Int) throws -> Lexer.Lexed? {
+    mutating func handleGrapheme(_ newGrapheme: G, offset: Int) throws -> Lexed? {
         assert(composite.isEmpty)
         
         return switch intermediates.last {
         case .escaping:
-            try handleEscaping(newByte: newByte, offset: offset)
+            try handleEscaping(newGrapheme: newGrapheme, offset: offset)
         case .grouping:
-            try handleGrouping(newByte: newByte, offset: offset)
+            try handleGrouping(newGrapheme: newGrapheme, offset: offset)
         case .matching:
-            handleMatching(newByte: newByte, offset: offset)
+            handleMatching(newGrapheme: newGrapheme, offset: offset)
         case .repeating:
-            try handleRepeating(newByte: newByte, offset: offset)
+            try handleRepeating(newGrapheme: newGrapheme, offset: offset)
         case nil:
-            try handleNormal(newByte: newByte, offset: offset)
+            try handleNormal(newGrapheme: newGrapheme, offset: offset)
         }
     }
     
-    mutating func handleNormal(newByte: UInt8, offset: Int) throws -> Lexer.Lexed? {
-        switch newByte {
+    mutating func handleNormal(newGrapheme: G, offset: Int) throws -> Lexed? {
+        switch newGrapheme {
         case "\\":
             intermediates.append(.escaping)
             return nil
@@ -126,14 +139,14 @@ extension Lexer.Worker {
             intermediates.append(.repeating)
             return (.reserved(.repetitionStart), offset)
         case "(", "[", "*", "?", "+":
-            composite.append(newByte)
+            composite.append(newGrapheme)
             return nil
         case "}":
-            throw Lexer.LexerError.plain(reserved: .repetitionEnd, offset: offset)
+            throw Error.plain(reserved: .repetitionEnd, offset: offset)
         case ")":
-            throw Lexer.LexerError.plain(reserved: .groupEnd, offset: offset)
+            throw Error.plain(reserved: .groupEnd, offset: offset)
         case "]":
-            throw Lexer.LexerError.plain(reserved: .matchEnd, offset: offset)
+            throw Error.plain(reserved: .matchEnd, offset: offset)
         case ".":
             return (.reserved(.anyChar), offset)
         case "|":
@@ -143,31 +156,31 @@ extension Lexer.Worker {
         case "$":
             return (.reserved(.end), offset)
         case _:
-            return (.utf8(newByte), offset)
+            return (.grapheme(newGrapheme), offset)
         }
     }
     
-    mutating func handleRepeating(newByte: UInt8, offset: Int) throws -> Lexer.Lexed? {
+    mutating func handleRepeating(newGrapheme: G, offset: Int) throws -> Lexed? {
         assert(intermediates.last == .repeating)
         
-        switch newByte {
-        case Unicode.Scalar("0")..."9":
-            return (.utf8(newByte), offset)
+        switch newGrapheme {
+        case "0"..."9":
+            return (.grapheme(newGrapheme), offset)
         case ",":
             return (.reserved(.repetitionComma), offset)
         case "}":
             intermediates.removeLast()
-            composite.append(newByte)
+            composite.append(newGrapheme)
             return nil
         case _:
-            throw Lexer.LexerError.repeating(byte: newByte, offset: offset)
+            throw Error.repeating(grapheme: newGrapheme, offset: offset)
         }
     }
     
-    mutating func handleMatching(newByte: UInt8, offset: Int) -> Lexer.Lexed? {
+    mutating func handleMatching(newGrapheme: G, offset: Int) -> Lexed? {
         assert(intermediates.last == .matching)
         
-        switch newByte {
+        switch newGrapheme {
         case "\\":
             intermediates.append(.escaping)
             return nil
@@ -177,27 +190,27 @@ extension Lexer.Worker {
         case "-":
             return (.reserved(.matchRange), offset)
         case _:
-            return (.utf8(newByte), offset)
+            return (.grapheme(newGrapheme), offset)
         }
     }
     
-    mutating func handleGrouping(newByte: UInt8, offset: Int) throws -> Lexer.Lexed? {
+    mutating func handleGrouping(newGrapheme: G, offset: Int) throws -> Lexed? {
         assert(intermediates.last == .grouping)
         
-        switch newByte {
+        switch newGrapheme {
         case ")":
             intermediates.removeLast()
             return (.reserved(.groupEnd), offset)
         case _:
-            return try handleNormal(newByte: newByte, offset: offset)
+            return try handleNormal(newGrapheme: newGrapheme, offset: offset)
         }
     }
     
-    mutating func handleEscaping(newByte: UInt8, offset: Int) throws -> Lexer.Lexed {
+    mutating func handleEscaping(newGrapheme: G, offset: Int) throws -> Lexed {
         let ret: Lexeme =
-        switch newByte {
+        switch newGrapheme {
         case "\\", "{", "}", "*", "?", "+", ".", "(", ")", "^", "$", "|", "[", "]":
-            .utf8(newByte)
+            .grapheme(newGrapheme)
         case "w":
             .reserved(.allAlphanumeric)
         case "W":
@@ -211,7 +224,7 @@ extension Lexer.Worker {
         case "S":
             .reserved(.allNonWhitespaces)
         case _:
-            throw Lexer.LexerError.escaping(byte: newByte, offset: offset)
+            throw Error.escaping(grapheme: newGrapheme, offset: offset)
         }
         
         intermediates.removeLast()
@@ -219,49 +232,49 @@ extension Lexer.Worker {
         return (ret, offset - 1)
     }
     
-    mutating func handleComposite(newByte: UInt8, offset: Int) -> CompositeResult {
+    mutating func handleComposite(newGrapheme: G, offset: Int) -> CompositeResult {
         assert(!composite.isEmpty)
         
         return switch composite[0] {
         case "(":
-            formingGroup(newByte: newByte, offset: offset)
+            formingGroup(newGrapheme: newGrapheme, offset: offset)
         case "[":
-            formingMatch(newByte: newByte, offset: offset)
+            formingMatch(newGrapheme: newGrapheme, offset: offset)
         case "*", "?", "+", "}":
-            formingGreedy(newByte: newByte, offset: offset)
+            formingGreedy(newGrapheme: newGrapheme, offset: offset)
         case _:
             fatalError("impossible")
         }
     }
     
-    mutating func formingGroup(newByte: UInt8, offset: Int) -> CompositeResult {
+    mutating func formingGroup(newGrapheme: G, offset: Int) -> CompositeResult {
         assert("(" ~= composite[0])
         
         if composite.count == 1 {
-            switch newByte {
+            switch newGrapheme {
             case "?", "<":
-                composite.append(newByte)
+                composite.append(newGrapheme)
                 return nil
             case _:
                 composite.removeAll()
                 intermediates.append(.grouping)
-                return ((.reserved(.groupStart), offset - 1), ([newByte], offset))
+                return ((.reserved(.groupStart), offset - 1), ([newGrapheme], offset))
             }
         } else {
             assert("?" ~= composite[1] || "<" ~= composite[1])
             
             return switch composite[1] {
             case "?":
-                formingGroupQuestionMark(newByte: newByte, offset: offset)
+                formingGroupQuestionMark(newGrapheme: newGrapheme, offset: offset)
             case "<":
-                formingGroupLookBehind(newByte: newByte, offset: offset)
+                formingGroupLookBehind(newGrapheme: newGrapheme, offset: offset)
             case _:
                 fatalError("impossible")
             }
         }
     }
     
-    mutating func formingGroupQuestionMark(newByte: UInt8, offset: Int) -> CompositeResult {
+    mutating func formingGroupQuestionMark(newGrapheme: G, offset: Int) -> CompositeResult {
         assert("(" ~= composite[0])
         assert("?" ~= composite[1])
         
@@ -270,7 +283,7 @@ extension Lexer.Worker {
             composite.removeAll()
         }
         
-        switch newByte {
+        switch newGrapheme {
         case ":":
             return ((.reserved(.nonCapturingGroupStart), offset - 2), nil)
         case "=":
@@ -278,11 +291,11 @@ extension Lexer.Worker {
         case "!":
             return ((.reserved(.negativeLookAheadStart), offset - 2), nil)
         case _:
-            return ((.reserved(.groupStart), offset - 2), ([composite[1], newByte], offset - 1))
+            return ((.reserved(.groupStart), offset - 2), ([composite[1], newGrapheme], offset - 1))
         }
     }
     
-    mutating func formingGroupLookBehind(newByte: UInt8, offset: Int) -> CompositeResult {
+    mutating func formingGroupLookBehind(newGrapheme: G, offset: Int) -> CompositeResult {
         assert("(" ~= composite[0])
         assert("<" ~= composite[1])
         
@@ -291,40 +304,40 @@ extension Lexer.Worker {
             composite.removeAll()
         }
         
-        switch newByte {
+        switch newGrapheme {
         case "=":
             return ((.reserved(.positiveLookBehindStart), offset - 2), nil)
         case "!":
             return ((.reserved(.negativeLookBehindStart), offset - 2), nil)
         case _:
-            return ((.reserved(.groupStart), offset - 2), ([composite[1], newByte], offset - 1))
+            return ((.reserved(.groupStart), offset - 2), ([composite[1], newGrapheme], offset - 1))
         }
     }
  
-    mutating func formingMatch(newByte: UInt8, offset: Int) -> CompositeResult {
+    mutating func formingMatch(newGrapheme: G, offset: Int) -> CompositeResult {
         assert("[" ~= composite[0])
         
         intermediates.append(.matching)
         composite.removeAll()
         
-        switch newByte {
+        switch newGrapheme {
         case "^":
             return ((.reserved(.notMatchStart), offset - 1), nil)
         case _:
-            return ((.reserved(.matchStart), offset - 1), ([newByte], offset))
+            return ((.reserved(.matchStart), offset - 1), ([newGrapheme], offset))
         }
     }
     
-    mutating func formingGreedy(newByte: UInt8, offset: Int) -> CompositeResult {
+    mutating func formingGreedy(newGrapheme: G, offset: Int) -> CompositeResult {
         assert("}" ~= composite[0] || "*" ~= composite[0] || "+" ~= composite[0] || "?" ~= composite[0])
         
         defer {
             composite.removeAll()
         }
         
-        let isNonGreedy = "?" ~= newByte
+        let isNonGreedy = "?" ~= newGrapheme
         
-        let reserved: Lexeme.Reserved =
+        let reserved: Lexeme<G>.Reserved =
         switch composite[0] {
         case "}":
             isNonGreedy ? .repetitionEndNonGreedy : .repetitionEnd
@@ -338,38 +351,28 @@ extension Lexer.Worker {
             fatalError("impossible")
         }
         
-        return ((.reserved(reserved), offset - 1), isNonGreedy ? nil : ([newByte], offset))
+        return ((.reserved(reserved), offset - 1), isNonGreedy ? nil : ([newGrapheme], offset))
     }
 }
 
 extension Lexer.LexerError {
-    init(byte: UInt8, context: Context, offset: Int) {
-        self.init(lexeme: .utf8(byte), context: context, offset: offset)
+    init(grapheme: G, context: Context, offset: Int) {
+        self.init(lexeme: .grapheme(grapheme), context: context, offset: offset)
     }
     
-    init(reserved: Lexeme.Reserved, context: Context, offset: Int) {
+    init(reserved: Lexeme<G>.Reserved, context: Context, offset: Int) {
         self.init(lexeme: .reserved(reserved), context: context, offset: offset)
     }
     
-    static func plain(reserved: Lexeme.Reserved, offset: Int) -> Self {
+    static func plain(reserved: Lexeme<G>.Reserved, offset: Int) -> Self {
         Self(reserved: reserved, context: .plain, offset: offset)
     }
     
-    static func escaping(byte: UInt8, offset: Int) -> Self {
-        Self(byte: byte, context: .escaping, offset: offset)
+    static func escaping(grapheme: G, offset: Int) -> Self {
+        Self(grapheme: grapheme, context: .escaping, offset: offset)
     }
     
-    static func repeating(byte: UInt8, offset: Int) -> Self {
-        Self(byte: byte, context: .repeating, offset: offset)
-    }
-}
-
-extension UInt8 {
-    static func ~=(lhs: Unicode.Scalar, rhs: Self) -> Bool {
-        rhs == .init(ascii: lhs)
-    }
-    
-    static func ~=(lhs: ClosedRange<Unicode.Scalar>, rhs: Self) -> Bool {
-        UInt8(ascii: lhs.lowerBound)...UInt8(ascii: lhs.upperBound) ~= rhs
+    static func repeating(grapheme: G, offset: Int) -> Self {
+        Self(grapheme: grapheme, context: .repeating, offset: offset)
     }
 }

@@ -5,7 +5,7 @@
 //  Created by Lau Chun Kai on 27/2/2024.
 //
 
-struct Automaton {
+struct Automaton<G : Grapheme> {
     let groupCount: Int
     let operation: Operation
     
@@ -21,24 +21,24 @@ struct Automaton {
     }
     
     func process(text: String) -> [[Range<Int>?]] {
-        let utf8s = Array(text.utf8)
-        var bytes = utf8s.dropFirst(0)
+        let graphemes = G.convertToGraphemes(s: text)
+        var stream = graphemes.dropFirst(0)
         var groups = Result.Groups(repeating: nil, count: groupCount + 1)
                 
         var matches = [Result.Groups]()
         
-        while !bytes.isEmpty {
+        while !stream.isEmpty {
             var operation = operation
             
-            switch operation.process(byteStream: bytes, groups: &groups) {
+            switch operation.process(stream: stream, groups: &groups) {
             case let .success(newStream):
-                groups[0] = bytes.startIndex..<newStream.startIndex
+                groups[0] = stream.startIndex..<newStream.startIndex
                 matches.append(groups)
             case .failed:
                 break
             }
             
-            bytes.removeFirst()
+            stream.removeFirst()
         }
         
         return matches
@@ -46,11 +46,13 @@ struct Automaton {
 }
 
 extension Automaton {
+    typealias Stream = ArraySlice<G>
+    
     enum Result {
         typealias Groups = [Range<Int>?]
         
         case failed
-        case success(_ byteStream: ArraySlice<UInt8>)
+        case success(_ stream: Stream)
         
         var isSuccess: Bool {
             if case .success = self {
@@ -181,9 +183,9 @@ extension Automaton {
     indirect enum Operation {
         case start
         case end
-        case bytes(_ pattern: [UInt8])
-        case match(_ filter: (UInt8) -> Bool)
-        case notMatch(_ filter: (UInt8) -> Bool)
+        case graphemes(_ pattern: [G])
+        case match(_ filter: (G) -> Bool)
+        case notMatch(_ filter: (G) -> Bool)
         case or(_ branches: [Operation])
         case group(_ grouper: Grouper, _ order: Int?)
         case repeater(Repeater)
@@ -191,7 +193,7 @@ extension Automaton {
         case none
         
         init(string: String) {
-            self = .bytes(Array(string.utf8))
+            self = .graphemes(G.convertToGraphemes(s: string))
         }
         
         var isNone: Bool {
@@ -202,61 +204,61 @@ extension Automaton {
             }
         }
         
-        mutating func process(byteStream: ArraySlice<UInt8>, groups: inout Result.Groups) -> Result {
-            guard !byteStream.isEmpty else {
+        mutating func process(stream: Stream, groups: inout Result.Groups) -> Result {
+            guard !stream.isEmpty else {
                 return .failed
             }
             
             let result: Result
             switch self {
             case .noOp:
-                result = .success(byteStream)
+                result = .success(stream)
             case .none:
                 return .failed
             case .start:
-                result = byteStream.startIndex == 0 ? .success(byteStream) : .failed
+                result = stream.startIndex == 0 ? .success(stream) : .failed
             case .end:
-                result = byteStream.isEmpty ? .success(byteStream) : .failed
-            case .bytes(let pattern):
-                result = byteStream.starts(with: pattern) ? .success(byteStream.dropFirst(pattern.count)) : .failed
+                result = stream.isEmpty ? .success(stream) : .failed
+            case .graphemes(let pattern):
+                result = stream.starts(with: pattern) ? .success(stream.dropFirst(pattern.count)) : .failed
             case .match(let filter):
-                result = filter(byteStream.first!) ? .success(byteStream.dropFirst()) : .failed
+                result = filter(stream.first!) ? .success(stream.dropFirst()) : .failed
             case .notMatch(let filter):
-                result = filter(byteStream.first!) ? .failed : .success(byteStream.dropFirst())
+                result = filter(stream.first!) ? .failed : .success(stream.dropFirst())
             case .or(let branches):
-                return handleOr(branches: branches, byteStream: byteStream, groups: &groups)
+                return handleOr(branches: branches, stream: stream, groups: &groups)
             case let .group(grouper, order):
-                return handleGroup(grouper: grouper, order: order, byteStream: byteStream, groups: &groups)
+                return handleGroup(grouper: grouper, order: order, stream: stream, groups: &groups)
             case let .repeater(repeater):
-                return handleRepeater(repeater: repeater, byteStream: byteStream, groups: &groups)
+                return handleRepeater(repeater: repeater, stream: stream, groups: &groups)
             }
             
             self = .none
             return result
         }
         
-        mutating func handleRepeater(repeater: Repeater, byteStream: ArraySlice<UInt8>, groups: inout Result.Groups) -> Result {
+        mutating func handleRepeater(repeater: Repeater, stream: Stream, groups: inout Result.Groups) -> Result {
             var repeater = repeater
             defer {
                 self = repeater.canReuse ? .repeater(repeater) : .none
             }
             
-            let result = repeater.process(byteStream: byteStream, groups: &groups)
+            let result = repeater.process(stream: stream, groups: &groups)
             self = .repeater(repeater)
             return result
         }
         
-        mutating func handleGroup(grouper: Grouper, order: Int?, byteStream: ArraySlice<UInt8>, groups: inout Result.Groups) -> Result {
+        mutating func handleGroup(grouper: Grouper, order: Int?, stream: Stream, groups: inout Result.Groups) -> Result {
             var grouper = grouper
             
             defer {
                 self = grouper.canReuse ? .group(grouper, order) : .none
             }
             
-            switch grouper.process(byteStream: byteStream, groups: &groups) {
+            switch grouper.process(stream: stream, groups: &groups) {
             case let .success(newStream):
                 if let order {
-                    groups[order] = byteStream.startIndex..<newStream.startIndex
+                    groups[order] = stream.startIndex..<newStream.startIndex
                 }
                 return .success(newStream)
             case .failed:
@@ -264,7 +266,7 @@ extension Automaton {
             }
         }
         
-        mutating func handleOr(branches: [Operation], byteStream: ArraySlice<UInt8>, groups: inout Result.Groups) -> Result {
+        mutating func handleOr(branches: [Operation], stream: Stream, groups: inout Result.Groups) -> Result {
             var branches = branches
             var newBranches = branches.dropFirst(0)
             
@@ -272,7 +274,7 @@ extension Automaton {
                 var branch = newBranches.removeFirst()
                 
                 repeat {
-                    let result = branch.process(byteStream: byteStream, groups: &groups)
+                    let result = branch.process(stream: stream, groups: &groups)
                                                             
                     if case .success = result {
                         if case .none = branch {
@@ -301,13 +303,16 @@ extension Automaton {
 }
 
 protocol Sequencer<I> {
-    typealias Operation = Automaton.Operation
-    typealias Result = Automaton.Result
+    associatedtype G : Grapheme
+    typealias Operation = Automaton<G>.Operation
+    
+    associatedtype I : IteratorProtocol<Operation> & Greediness
+    typealias Result = Automaton<G>.Result
+    typealias Stream = Automaton<G>.Stream
     typealias Groups = Result.Groups
      
-    associatedtype I : IteratorProtocol<Operation> & Greediness
     
-    typealias TimeMachine = [(multiModal: Operation, followers: I?, progress: ArraySlice<UInt8>, groups: Groups)]
+    typealias TimeMachine = [(multiModal: Operation, followers: I?, progress: Stream, groups: Groups)]
     
     func followers() -> I
     
@@ -319,10 +324,10 @@ protocol Sequencer<I> {
 }
 
 extension Sequencer {
-    mutating func processVariant(_ variant: inout Operation, progress: ArraySlice<UInt8>, groups: inout Groups) -> SequencerVariantProgress {
+    mutating func processVariant(_ variant: inout Operation, progress: Stream, groups: inout Groups) -> SequencerVariantProgress<G> {
         let oldGroups = groups
         
-        switch variant.process(byteStream: progress, groups: &groups) {
+        switch variant.process(stream: progress, groups: &groups) {
         case let .success(newStream):
             if !variant.isNone {
                 timeMachine.append((variant, nil, progress, oldGroups))
@@ -334,10 +339,10 @@ extension Sequencer {
         }
     }
     
-    mutating func processVariant(_ variant: inout Operation, progress: ArraySlice<UInt8>, followers: inout I, groups: inout Groups) -> SequencerVariantProgress {
+    mutating func processVariant(_ variant: inout Operation, progress: Stream, followers: inout I, groups: inout Groups) -> SequencerVariantProgress<G> {
         let oldGroups = groups
         
-        switch variant.process(byteStream: progress, groups: &groups) {
+        switch variant.process(stream: progress, groups: &groups) {
         case let .success(newStream):
             if !variant.isNone {
                 timeMachine.append((variant, followers, progress, oldGroups))
@@ -359,10 +364,10 @@ extension Sequencer {
         }
     }
     
-    mutating func process(operation: inout Operation, progress: inout ArraySlice<UInt8>, followers: inout I, groups: inout Groups) -> SequencerProgress {
+    mutating func process(operation: inout Operation, progress: inout Stream, followers: inout I, groups: inout Groups) -> SequencerProgress<G> {
         let oldGroups = groups
         
-        switch operation.process(byteStream: progress, groups: &groups) {
+        switch operation.process(stream: progress, groups: &groups) {
         case let .success(newStream):
             if !followers.isAtomic && followers.hasNext {
                 timeMachine.append((.noOp, nil, newStream, groups))
@@ -438,7 +443,7 @@ extension Sequencer {
         return .failed
     }
     
-    mutating func process(byteStream: ArraySlice<UInt8>, groups: inout Groups) -> Result {
+    mutating func process(stream: Stream, groups: inout Groups) -> Result {
         guard canReuse else {
             return .failed
         }
@@ -451,12 +456,12 @@ extension Sequencer {
             return processStack(groups: &groups)
         }
         
-        var byteStream = byteStream
+        var stream = stream
         var followers = self.followers()
         
     main:
         while var operation = followers.next() {
-            switch process(operation: &operation, progress: &byteStream, followers: &followers, groups: &groups) {
+            switch process(operation: &operation, progress: &stream, followers: &followers, groups: &groups) {
             case let .completed(newStream):
                 complete()
                 return .success(newStream)
@@ -465,8 +470,8 @@ extension Sequencer {
                     complete()
                     return .failed
                 } else {
-                    while !operation.isNone && !byteStream.isEmpty {
-                        switch process(operation: &operation, progress: &byteStream, followers: &followers, groups: &groups) {
+                    while !operation.isNone && !stream.isEmpty {
+                        switch process(operation: &operation, progress: &stream, followers: &followers, groups: &groups) {
                         case let .completed(newStream):
                             return .success(newStream)
                         case .failed:
@@ -491,7 +496,7 @@ extension Sequencer {
             }
         }
         
-        return .success(byteStream)
+        return .success(stream)
     }
 }
 
@@ -500,15 +505,15 @@ protocol Greediness {
     var isAtomic: Bool { get }
 }
 
-enum SequencerVariantProgress {
+enum SequencerVariantProgress<G : Grapheme> {
     case inProgress
-    case completed(ArraySlice<UInt8>)
+    case completed(Automaton<G>.Stream)
     case failed
 }
 
-enum SequencerProgress {
+enum SequencerProgress<G : Grapheme> {
     case inProgress(variantMet: Bool)
-    case completed(ArraySlice<UInt8>)
+    case completed(Automaton<G>.Stream)
     case failed
 }
 

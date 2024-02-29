@@ -10,43 +10,18 @@ public enum Parser {
         let offset: Int
     }
     
-    static let alphaNumericMatch: (UInt8) -> Bool = { byte in
-        switch byte {
-        case "a"..."z", "A"..."Z", "0"..."9":
-            true
-        case _:
-            false
-        }
-    }
-    
-    static let digitsMatch: (UInt8) -> Bool = { byte in
-        switch byte {
-        case "0"..."9":
-            true
-        case _:
-            false
-        }
-    }
-    
-    static let whiteSpaceMatch: (UInt8) -> Bool = { byte in
-        switch byte {
-        case "\t", " ", "\n":
-            true
-        case _:
-            false
-        }
-    }
-    
-    struct OperationEater {
-        var topLevelOperations = [Automaton.Operation]()
-        var operations = [Automaton.Operation]()
+    struct OperationEater<G : Grapheme> {
+        typealias Operation = Automaton<G>.Operation
+        
+        var topLevelOperations = [Operation]()
+        var operations = [Operation]()
         var isOr = false
         
-        mutating func eat(_ op: Automaton.Operation) {
+        mutating func eat(_ op: Operation) {
             operations.append(op)
         }
         
-        mutating func decorate(_ decorator: (inout Automaton.Operation) -> Void) -> Bool {
+        mutating func decorate(_ decorator: (inout Operation) -> Void) -> Bool {
             if operations.isEmpty {
                 return false
             } else {
@@ -83,26 +58,30 @@ public enum Parser {
             case _:
                 break
             }
-        }
+        }        
     }
     
-    static func parse(lexedList: [Lexer.Lexed]) throws -> Automaton {
-        var utf8s = [UInt8]()
+    typealias Lexed<G : Grapheme> = Lexer.Lexed<G>
+    typealias LexedIterator<G : Grapheme> = IteratorProtocol<Lexed<G>>
+    typealias Operation<G : Grapheme> = Automaton<G>.Operation
+    
+    static func parse<G>(lexedList: [Lexed<G>]) throws -> Automaton<G> {
+        var graphemes = [G]()
         
-        var eater = OperationEater()
+        var eater = OperationEater<G>()
         var groupCount = 0
         
         var cursor = lexedList.makeIterator()
         
         while let lexed = cursor.next() {
-            let result = try commonSwitch(lexed: lexed, lexedList: &cursor, utf8s: &utf8s, groupCount: &groupCount)
-            if case let .utf8(utf8) = result {
-                utf8s.append(utf8)
+            let result = try commonSwitch(lexed: lexed, lexedList: &cursor, graphemes: &graphemes, groupCount: &groupCount)
+            if case let .grapheme(grapheme) = result {
+                graphemes.append(grapheme)
                 continue
             } else {
-                if !utf8s.isEmpty {
-                    eater.eat(.bytes(utf8s))
-                    utf8s.removeAll()
+                if !graphemes.isEmpty {
+                    eater.eat(.graphemes(graphemes))
+                    graphemes.removeAll()
                 }
             }
             
@@ -127,8 +106,8 @@ public enum Parser {
             }
         }
         
-        if !utf8s.isEmpty {
-            eater.eat(.bytes(utf8s))
+        if !graphemes.isEmpty {
+            eater.eat(.graphemes(graphemes))
         }
         
         eater.wrapUp()
@@ -140,14 +119,14 @@ public enum Parser {
         }
     }
     
-    enum CommonSwitch {
-        case op(Automaton.Operation)
-        case decorator((inout Automaton.Operation) -> Void)
-        case utf8(UInt8)
-        case notHandled(Lexeme.Reserved)
+    enum CommonSwitch<G : Grapheme> {
+        case op(Operation<G>)
+        case decorator((inout Operation<G>) -> Void)
+        case grapheme(G)
+        case notHandled(Lexeme<G>.Reserved)
     }
     
-    static func commonSwitch(lexed: Lexer.Lexed, lexedList: inout some IteratorProtocol<Lexer.Lexed>, utf8s: inout [UInt8], groupCount: inout Int) throws -> CommonSwitch {
+    static func commonSwitch<G>(lexed: Lexed<G>, lexedList: inout some LexedIterator<G>, graphemes: inout [G], groupCount: inout Int) throws -> CommonSwitch<G> {
         switch lexed.lexeme {
         case let .reserved(reserved):
             switch reserved {
@@ -160,17 +139,17 @@ public enum Parser {
             case .end:
                 .op(.end)
             case .allAlphanumeric:
-                .op(.match(alphaNumericMatch))
+                .op(.match { $0.isAlphanumeric })
             case .allDigits:
-                .op(.match(digitsMatch))
+                .op(.match { $0.isNumber })
             case .allNonAlphanumeric:
-                .op(.notMatch(alphaNumericMatch))
+                .op(.notMatch { $0.isAlphanumeric })
             case .allNonDigits:
-                .op(.notMatch(digitsMatch))
+                .op(.notMatch { $0.isNumber })
             case .allWhitespaces:
-                .op(.match(whiteSpaceMatch))
+                .op(.match { $0.isWhitespace })
             case .allNonWhitespaces:
-                .op(.notMatch(whiteSpaceMatch))
+                .op(.notMatch { $0.isWhitespace })
             case .anyChar:
                 .op(.notMatch({ "\n" ~= $0 }))
             case .matchStart:
@@ -180,42 +159,50 @@ public enum Parser {
             case .matchEnd:
                 throw ParserError(offset: lexed.offset)
             case .zeroOrMore:
-                .decorator(repeatZeroOrMore)
+                .decorator(repeatZeroOrMore())
             case .zeroOrOne:
-                .decorator(repeatZeroOrOne)
+                .decorator(repeatZeroOrOne())
             case .oneOrMore:
-                .decorator(repeatOneOrMore)
+                .decorator(repeatOneOrMore())
             case _:
                 .notHandled(reserved)
             }
-        case let .utf8(byte):
-            .utf8(byte)
+        case let .grapheme(byte):
+            .grapheme(byte)
         }
     }
     
-    static func repeater(times: Automaton.Repeater.Times, isGreedy: Bool) -> (inout Automaton.Operation) -> Void {
+    static func repeater<G>(times: Automaton<G>.Repeater.Times, isGreedy: Bool) -> (inout Operation<G>) -> Void {
         { oldOp in
             oldOp = .repeater(.init(child: oldOp, times: times, isGreedy: isGreedy))
         }
     }
     
-    static let repeatZeroOrMore = repeater(times: .atLeast(0), isGreedy: true)
-    static let repeatOneOrMore = repeater(times: .atLeast(1), isGreedy: true)
-    static let repeatZeroOrOne = repeater(times: .atMost(1), isGreedy: true)
+    static func repeatZeroOrMore<G>() -> (inout Operation<G>) -> Void {
+        repeater(times: .atLeast(0), isGreedy: true)
+    }
     
-    static func parseGroupCommon(lexedList: inout some IteratorProtocol<Lexer.Lexed>, groupCount: inout Int) throws -> Automaton.Grouper {
-        var utf8s = [UInt8]()
-        var eater = OperationEater()
+    static func repeatOneOrMore<G>() -> (inout Operation<G>) -> Void {
+        repeater(times: .atLeast(1), isGreedy: true)
+    }
+    
+    static func repeatZeroOrOne<G>() -> (inout Operation<G>) -> Void {
+        repeater(times: .atMost(1), isGreedy: true)
+    }
+    
+    static func parseGroupCommon<G>(lexedList: inout some LexedIterator<G>, groupCount: inout Int) throws -> Automaton<G>.Grouper {
+        var graphemes = [G]()
+        var eater = OperationEater<G>()
     outer:
         while let lexed = lexedList.next() {
-            let result = try commonSwitch(lexed: lexed, lexedList: &lexedList, utf8s: &utf8s, groupCount: &groupCount)
-            if case let .utf8(utf8) = result {
-                utf8s.append(utf8)
+            let result = try commonSwitch(lexed: lexed, lexedList: &lexedList, graphemes: &graphemes, groupCount: &groupCount)
+            if case let .grapheme(grapheme) = result {
+                graphemes.append(grapheme)
                 continue
             } else {
-                if !utf8s.isEmpty {
-                    eater.eat(.bytes(utf8s))
-                    utf8s.removeAll()
+                if !graphemes.isEmpty {
+                    eater.eat(.graphemes(graphemes))
+                    graphemes.removeAll()
                 }
             }
             
@@ -240,8 +227,8 @@ public enum Parser {
             }
         }
         
-        if !utf8s.isEmpty {
-            eater.eat(.bytes(utf8s))
+        if !graphemes.isEmpty {
+            eater.eat(.graphemes(graphemes))
         }
         
         eater.wrapUp()
@@ -253,37 +240,35 @@ public enum Parser {
         }
     }
     
-    static func parseGroup(lexedList: inout some IteratorProtocol<Lexer.Lexed>, groupCount: inout Int) throws -> Automaton.Operation {
+    static func parseGroup<G>(lexedList: inout some LexedIterator<G>, groupCount: inout Int) throws -> Operation<G> {
         groupCount += 1
         let oldGroupCount = groupCount
         let grouper = try parseGroupCommon(lexedList: &lexedList, groupCount: &groupCount)
         return .group(grouper, oldGroupCount)
     }
     
-    static func parseNonCapturingGroup(lexedList: inout some IteratorProtocol<Lexer.Lexed>, groupCount: inout Int) throws -> Automaton.Operation {
+    static func parseNonCapturingGroup<G>(lexedList: inout some LexedIterator<G>, groupCount: inout Int) throws -> Operation<G> {
         let grouper = try parseGroupCommon(lexedList: &lexedList, groupCount: &groupCount)
         return .group(grouper, nil)
     }
     
-    static func parseMatch(lexedList: inout some IteratorProtocol<Lexer.Lexed>) throws -> Automaton.Operation {
+    static func parseMatch<G>(lexedList: inout some LexedIterator<G>) throws -> Operation<G> {
         try .match(parseMatchCommon(lexedList: &lexedList))
     }
         
-    static func parseNotMatch(lexedList: inout some IteratorProtocol<Lexer.Lexed>) throws -> Automaton.Operation {
+    static func parseNotMatch<G>(lexedList: inout some LexedIterator<G>) throws -> Operation<G> {
         try .notMatch(parseMatchCommon(lexedList: &lexedList))
     }
     
-    static func parseMatchCommon(lexedList: inout some IteratorProtocol<Lexer.Lexed>) throws -> (UInt8) -> Bool {
-        var stupidMap = [Bool](repeating: false, count: 256)
+    static func parseMatchCommon<G>(lexedList: inout some LexedIterator<G>) throws -> (G) -> Bool {
+        var matcher = G.matcher()
         
         while let lexed = lexedList.next() {
             switch lexed.lexeme {
-            case let .utf8(byte):
-                stupidMap[Int(byte)] = true
+            case let .grapheme(grapheme):
+                matcher.add(grapheme)
             case .reserved(.matchEnd):
-                return { byte in
-                    stupidMap[Int(byte)]
-                }
+                return matcher.contains(_:)
             case _:
                 throw ParserError(offset: lexed.offset)
             }

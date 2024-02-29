@@ -5,9 +5,9 @@
 //  Created by Lau Chun Kai on 27/2/2024.
 //
 
-public enum Lexeme {
+public enum Lexeme<G : Grapheme> {
     case reserved(Reserved)
-    case utf8(UInt8)
+    case grapheme(G)
 }
 
 public extension Lexeme {
@@ -57,8 +57,8 @@ extension Lexeme : CustomStringConvertible {
         switch self {
         case .reserved(let reserved):
             "Lexeme.\(reserved)"
-        case .utf8(let byte):
-            byte < 128 ? "'\(Character(UnicodeScalar(UInt32(byte))!))'" : "0x\(String(byte, radix: 16))"
+        case .grapheme(let grapheme):
+            grapheme.string
         }
     }
 }
