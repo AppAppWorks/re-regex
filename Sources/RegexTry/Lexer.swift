@@ -81,6 +81,11 @@ public extension Lexer {
             throw LexerError(byte: 0, context: context, offset: s.utf8.count)
         }
         
+        // TODO: - tidying up the flushing of the last bytes
+        if !worker.composite.isEmpty {
+            try handleComposite(worker: &worker, ret: &ret, byte: .init(ascii: "*"), offset: s.utf8.count)
+        }
+        
         return ret
     }
 }
