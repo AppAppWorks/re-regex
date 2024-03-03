@@ -20,13 +20,150 @@ public protocol Grapheme : Equatable {
     
     static var zero: Self { get }
     
-    static func convertToGraphemes(s: String) -> [Self]
-    
     associatedtype Matcher : GraphemeMatcher<Self>
     
     static func matcher() -> Matcher
     
     init(ascii: Unicode.Scalar)
+}
+
+public protocol GraphemePattern<Element> : RangeReplaceableCollection where Element : Grapheme {
+    
+    init()
+    
+    init(_ s: String)
+    
+    mutating func append(_ element: Element)
+}
+
+public protocol Graphemes<Element> : Sequence where Element : Grapheme {
+    associatedtype Index : Comparable
+    associatedtype SubSequence : Graphemes<Element> where SubSequence.SubSequence == SubSequence, Index == SubSequence.Index
+    
+    var underestimatedCount: Int { get }
+    
+    var offset: Int { get }
+    
+    func dropFirst() -> (Element, SubSequence)
+    
+    func dropFirst(_ k: Int) -> SubSequence
+    
+    var startIndex: Index { get }
+    
+    var endIndex: Index { get }
+    
+    var isEmpty: Bool { get }
+    
+    subscript(range: some RangeExpression<Index>) -> String { get }
+    
+    static func convertToGraphemes(s: String) -> Self
+}
+
+public protocol StringConvertibleCollection : Collection where SubSequence : StringConvertibleCollection {
+    
+    init(s: String)
+    
+    subscript(range: some RangeExpression<Index>) -> String { get }
+}
+
+protocol CollectionGraphemes<C> : Graphemes where Element : Grapheme, Element == C.Element, SubSequence : CollectionGraphemes<C.SubSequence> {
+    
+    associatedtype C : StringConvertibleCollection
+    
+    var c: C { get }
+    
+    init(c: C, offset: Int)
+}
+
+extension CollectionGraphemes {    
+    public var startIndex: C.Index {
+        c.startIndex
+    }
+    
+    public var endIndex: C.Index {
+        c.endIndex
+    }
+    
+    public var isEmpty: Bool {
+        c.isEmpty
+    }
+    
+    public func dropFirst() -> (Element, SubSequence) {
+        (c.first!, .init(c: c.dropFirst(1), offset: offset + 1))
+    }
+    
+    public func dropFirst(_ k: Int) -> SubSequence {
+        .init(c: c.dropFirst(k), offset: offset + k)
+    }
+    
+    public func makeIterator() -> C.Iterator {
+        c.makeIterator()
+    }
+    
+    public subscript(range: some RangeExpression<C.Index>) -> String {
+        c[range]
+    }
+}
+
+public struct NoOpGraphemes<C : StringConvertibleCollection> : Graphemes, CollectionGraphemes where C.Element : Grapheme {
+    public typealias Element = C.Element
+    public typealias Iterator = C.Iterator
+    
+    public func dropFirst() -> (Element, SubSequence) {
+        (c.first!, .init(c: c.dropFirst(1), offset: 1))
+    }
+    
+    public func dropFirst(_ k: Int) -> SubSequence {
+        .init(c: c.dropFirst(k), offset: k)
+    }
+    
+    public typealias Index = C.Index
+    
+    public let c: C
+    
+    public let offset = 0
+    
+    public typealias SubSequence = NoOpSubGraphemes<C.SubSequence>
+    
+    public init(c: C) {
+        self.c = c
+    }
+    
+    init(c: C, offset: Int) {
+        fatalError("don't use it")
+    }
+    
+    public var underestimatedCount: Int {
+        c.underestimatedCount
+    }
+    
+    public static func convertToGraphemes(s: String) -> Self {
+        .init(c: .init(s: s))
+    }
+}
+
+public struct NoOpSubGraphemes<C : StringConvertibleCollection> : Graphemes, CollectionGraphemes where C.Element : Grapheme, C == C.SubSequence {
+    public typealias Element = C.Element
+    public typealias Iterator = C.Iterator
+    
+    public let c: C
+    
+    public let offset: Int
+    
+    public typealias SubSequence = Self
+    
+    public init(c: C, offset: Int) {
+        self.c = c
+        self.offset = offset
+    }
+    
+    public var underestimatedCount: Int {
+        c.underestimatedCount
+    }
+    
+    public static func convertToGraphemes(s: String) -> Self {
+        fatalError()
+    }
 }
 
 public protocol GraphemeMatcher<G> {
@@ -46,7 +183,41 @@ extension Set<Character> : GraphemeMatcher {
     
 }
 
+extension String : StringConvertibleCollection {
+    public init(s: String) {
+        self = s
+    }
+    
+    public subscript(range: some RangeExpression<Index>) -> String {
+        let ss: Substring = self[range]
+        return String(ss)
+    }
+}
+
+extension Substring : StringConvertibleCollection {
+    public init(s: String) {
+        fatalError()
+    }
+    
+    public subscript(range: some RangeExpression<Index>) -> String {
+        let ss: Substring = self[range]
+        return String(ss)
+    }
+}
+
+extension String : GraphemePattern {
+    public mutating func append(_ element: Character) {
+        insert(element, at: endIndex)
+    }
+}
+
 extension Character : Grapheme {
+    public typealias Pattern = String
+    
+    public static func convertToPatterns(s: String) -> String {
+        s
+    }
+    
     public static func matcher() -> Set<Character> {
         []
     }
@@ -69,8 +240,8 @@ extension Character : Grapheme {
         isNumber || isLetter
     }
     
-    public static func convertToGraphemes(s: String) -> [Character] {
-        Array(s)
+    public static func convertToGraphemes(s: String) -> NoOpGraphemes<String> {
+        .init(c: s)
     }
     
     public init(ascii: Unicode.Scalar) {
@@ -99,7 +270,41 @@ public struct BitBus : GraphemeMatcher {
     var high: UInt64 = 0
 }
 
+extension [UInt8] : StringConvertibleCollection {
+    
+    public init(s: String) {
+        self.init(s.utf8)
+    }
+    
+    public subscript(range: some RangeExpression<Index>) -> String {
+        String(decoding: self[range], as: UTF8.self)
+    }
+}
+
+extension ArraySlice<UInt8> : StringConvertibleCollection {
+    
+    public init(s: String) {
+        fatalError()
+    }
+    
+    public subscript(range: some RangeExpression<Index>) -> String {
+        String(decoding: self[range], as: UTF8.self)
+    }
+}
+
+extension [UInt8] : GraphemePattern {
+    public init(_ s: String) {
+        self.init(s.utf8)
+    }
+}
+
 extension UInt8 : Grapheme {
+    public typealias Pattern = [UInt8]
+    
+    public static func convertToPatterns(s: String) -> [UInt8] {
+        Array(s.utf8)
+    }
+    
     public var string: String {
         self < 128 ? "'\(Character(UnicodeScalar(UInt32(self))!))'" : "0x\(String(self, radix: 16))"
     }
@@ -141,8 +346,8 @@ extension UInt8 : Grapheme {
     
     public static let zero: UInt8 = 0
     
-    public static func convertToGraphemes(s: String) -> [UInt8] {
-        Array(s.utf8)
+    public static func convertToGraphemes(s: String) -> NoOpGraphemes<[UInt8]> {
+        .init(c: Array(s.utf8))
     }
     
     public static func matcher() -> BitBus {

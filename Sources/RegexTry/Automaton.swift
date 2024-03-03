@@ -5,7 +5,9 @@
 //  Created by Lau Chun Kai on 27/2/2024.
 //
 
-struct Automaton<G : Grapheme> {
+struct Automaton<GS : Graphemes, GP : GraphemePattern> where GS.Element == GP.Element {
+    typealias G = GS.Element
+    
     let groupCount: Int
     let operation: Operation
     
@@ -20,8 +22,8 @@ struct Automaton<G : Grapheme> {
         operation = .group(.init(operations: operations), nil)
     }
     
-    func process(text: String) -> [[Range<Int>?]] {
-        let graphemes = G.convertToGraphemes(s: text)
+    func process(text: String) -> [[Range<GS.Index>?]] {
+        let graphemes = GS.convertToGraphemes(s: text)
         var stream = graphemes.dropFirst(0)
         var groups = Result.Groups(repeating: nil, count: groupCount + 1)
                 
@@ -38,7 +40,7 @@ struct Automaton<G : Grapheme> {
                 break
             }
             
-            stream.removeFirst()
+            (_, stream) = stream.dropFirst()
         }
         
         return matches
@@ -46,10 +48,10 @@ struct Automaton<G : Grapheme> {
 }
 
 extension Automaton {
-    typealias Stream = ArraySlice<G>
+    typealias Stream = GS.SubSequence
     
     enum Result {
-        typealias Groups = [Range<Int>?]
+        typealias Groups = [Range<GS.Index>?]
         
         case failed
         case success(_ stream: Stream)
@@ -183,7 +185,7 @@ extension Automaton {
     indirect enum Operation {
         case start
         case end
-        case graphemes(_ pattern: [G])
+        case graphemes(_ pattern: GP)
         case match(_ filter: (G) -> Bool)
         case notMatch(_ filter: (G) -> Bool)
         case or(_ branches: [Operation])
@@ -193,7 +195,7 @@ extension Automaton {
         case none
         
         init(string: String) {
-            self = .graphemes(G.convertToGraphemes(s: string))
+            self = .graphemes(GP(string))
         }
         
         var isNone: Bool {
@@ -216,15 +218,17 @@ extension Automaton {
             case .none:
                 return .failed
             case .start:
-                result = stream.startIndex == 0 ? .success(stream) : .failed
+                result = stream.offset == 0 ? .success(stream) : .failed
             case .end:
                 result = stream.isEmpty ? .success(stream) : .failed
             case .graphemes(let pattern):
-                result = stream.starts(with: pattern) ? .success(stream.dropFirst(pattern.count)) : .failed
+                result = stream.starts(with: pattern) ? .success(stream.dropFirst(pattern.underestimatedCount)) : .failed
             case .match(let filter):
-                result = filter(stream.first!) ? .success(stream.dropFirst()) : .failed
+                let (first, subStream) = stream.dropFirst()
+                result = filter(first) ? .success(subStream) : .failed
             case .notMatch(let filter):
-                result = filter(stream.first!) ? .failed : .success(stream.dropFirst())
+                let (first, subStream) = stream.dropFirst()
+                result = filter(first) ? .failed : .success(subStream)
             case .or(let branches):
                 return handleOr(branches: branches, stream: stream, groups: &groups)
             case let .group(grouper, order):
@@ -303,12 +307,16 @@ extension Automaton {
 }
 
 protocol Sequencer<I> {
-    associatedtype G : Grapheme
-    typealias Operation = Automaton<G>.Operation
+    associatedtype GS : Graphemes
+    associatedtype GP : GraphemePattern where GP.Element == GS.Element, GP.Element : Grapheme
+    typealias G = GP.Element
+    
+    typealias A = Automaton<GS, GP>
+    typealias Operation = A.Operation
     
     associatedtype I : IteratorProtocol<Operation> & Greediness
-    typealias Result = Automaton<G>.Result
-    typealias Stream = Automaton<G>.Stream
+    typealias Result = A.Result
+    typealias Stream = A.Stream
     typealias Groups = Result.Groups
      
     
@@ -324,7 +332,7 @@ protocol Sequencer<I> {
 }
 
 extension Sequencer {
-    mutating func processVariant(_ variant: inout Operation, progress: Stream, groups: inout Groups) -> SequencerVariantProgress<G> {
+    mutating func processVariant(_ variant: inout Operation, progress: Stream, groups: inout Groups) -> SequencerVariantProgress<GS> {
         let oldGroups = groups
         
         switch variant.process(stream: progress, groups: &groups) {
@@ -339,7 +347,7 @@ extension Sequencer {
         }
     }
     
-    mutating func processVariant(_ variant: inout Operation, progress: Stream, followers: inout I, groups: inout Groups) -> SequencerVariantProgress<G> {
+    mutating func processVariant(_ variant: inout Operation, progress: Stream, followers: inout I, groups: inout Groups) -> SequencerVariantProgress<GS> {
         let oldGroups = groups
         
         switch variant.process(stream: progress, groups: &groups) {
@@ -364,7 +372,7 @@ extension Sequencer {
         }
     }
     
-    mutating func process(operation: inout Operation, progress: inout Stream, followers: inout I, groups: inout Groups) -> SequencerProgress<G> {
+    mutating func process(operation: inout Operation, progress: inout Stream, followers: inout I, groups: inout Groups) -> SequencerProgress<GS> {
         let oldGroups = groups
         
         switch operation.process(stream: progress, groups: &groups) {
@@ -505,15 +513,15 @@ protocol Greediness {
     var isAtomic: Bool { get }
 }
 
-enum SequencerVariantProgress<G : Grapheme> {
+enum SequencerVariantProgress<GS : Graphemes> {
     case inProgress
-    case completed(Automaton<G>.Stream)
+    case completed(GS.SubSequence)
     case failed
 }
 
-enum SequencerProgress<G : Grapheme> {
+enum SequencerProgress<GS : Graphemes> {
     case inProgress(variantMet: Bool)
-    case completed(Automaton<G>.Stream)
+    case completed(GS.SubSequence)
     case failed
 }
 

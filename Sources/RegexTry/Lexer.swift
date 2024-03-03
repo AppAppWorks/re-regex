@@ -5,8 +5,8 @@
 //  Created by Lau Chun Kai on 25/2/2024.
 //
 
-public enum Lexer {
-    static func handleGrapheme<G>(worker: inout Worker<G>, ret: inout [Lexed<G>], grapheme: G, offset: Int) throws {
+public enum Lexer<G : Grapheme> {
+    static func handleGrapheme(worker: inout Worker, ret: inout [Lexed], grapheme: G, offset: Int) throws {
         if !worker.composite.isEmpty {
             try handleComposite(worker: &worker, ret: &ret, grapheme: grapheme, offset: offset)
         } else if let result = try worker.handleGrapheme(grapheme, offset: offset) {
@@ -16,7 +16,7 @@ public enum Lexer {
     }
 
     
-    static func handleComposite<G>(worker: inout Worker<G>, ret: inout [Lexed<G>], grapheme: G, offset: Int) throws {
+    static func handleComposite(worker: inout Worker, ret: inout [Lexed], grapheme: G, offset: Int) throws {
         guard let compositeResult = worker.handleComposite(newGrapheme: grapheme, offset: offset) else {
             return;
         }
@@ -31,17 +31,25 @@ public enum Lexer {
         }
     }
     
-    struct Worker<G : Grapheme> {
+    struct Worker {
         var composite = [G]()
         var other = [G]()
         var intermediates = [Intermediate]()
     }
 }
 
+func lexUnicode(s: String) throws -> [Lexer<Character>.Lexed] {
+    try Lexer<Character>.lex(graphemes: NoOpGraphemes(c: s))
+}
+
+func lexAscii(s: String) throws -> [Lexer<UInt8>.Lexed] {
+    try Lexer<UInt8>.lex(graphemes: NoOpGraphemes(c: Array(s.utf8)))
+}
+
 public extension Lexer {
-    typealias Lexed<G : Grapheme> = (lexeme: Lexeme<G>, offset: Int)
+    typealias Lexed = (lexeme: Lexeme<G>, offset: Int)
     
-    struct LexerError<G : Grapheme> : Error {
+    struct LexerError : Error {
         let lexeme: Lexeme<G>
         let context: Context
         let offset: Int
@@ -55,27 +63,18 @@ public extension Lexer {
         }
     }
     
-    static func lexUnicode(s: String) throws -> [Lexed<Character>] {
-        try lex(s: s)
-    }
-    
-    static func lexAscii(s: String) throws -> [Lexed<UInt8>] {
-        try lex(s: s)
-    }
-    
-    static func lex<G>(s: String) throws -> [Lexed<G>]  {
-        var ret = [Lexed<G>]()
-        let graphemes = G.convertToGraphemes(s: s)
-        ret.reserveCapacity(graphemes.count)
+    static func lex<GS : Graphemes>(graphemes: GS) throws -> [Lexed] where GS.Element == G {
+        var ret = [Lexed]()
+        ret.reserveCapacity(graphemes.underestimatedCount)
         
-        var worker = Worker<G>()
+        var worker = Worker()
         
         for (offset, grapheme) in graphemes.enumerated() {
             try handleGrapheme(worker: &worker, ret: &ret, grapheme: grapheme, offset: offset)
         }
         
         if let intermediate = worker.intermediates.last {
-            let context: LexerError<G>.Context =
+            let context: LexerError.Context =
             switch intermediate {
             case .grouping:
                 .grouping
@@ -87,14 +86,14 @@ public extension Lexer {
                 .repeating
             }
             
-            throw LexerError(grapheme: .zero, context: context, offset: graphemes.count)
+            throw LexerError(grapheme: .zero, context: context, offset: graphemes.offset)
         }
         
         // TODO: - tidying up the flushing of the last bytes
         
         
         if !worker.composite.isEmpty {
-            try handleComposite(worker: &worker, ret: &ret, grapheme: .init(ascii: "*"), offset: s.utf8.count)
+            try handleComposite(worker: &worker, ret: &ret, grapheme: .init(ascii: "*"), offset: graphemes.offset)
         }
         
         return ret
@@ -110,8 +109,8 @@ extension Lexer.Worker {
     }
     
     typealias CompositeResult = ((composite: (Lexeme<G>, Int), other: ([G], Int)?))?
-    typealias Lexed = Lexer.Lexed<G>
-    typealias Error = Lexer.LexerError<G>
+    typealias Lexed = Lexer.Lexed
+    typealias Error = Lexer.LexerError
     
     mutating func handleGrapheme(_ newGrapheme: G, offset: Int) throws -> Lexed? {
         assert(composite.isEmpty)

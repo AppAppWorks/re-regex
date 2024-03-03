@@ -5,14 +5,16 @@
 //  Created by Lau Chun Kai on 26/2/2024.
 //
 
-public enum Parser {
+public enum Parser<GS, GP> where GS : Graphemes, GP : GraphemePattern<GS.Element> {
+    typealias G = GS.Element
+    typealias A = Automaton<GS, GP>
+    typealias Operation = A.Operation
+    
     struct ParserError : Error {
         let offset: Int
     }
     
-    struct OperationEater<G : Grapheme> {
-        typealias Operation = Automaton<G>.Operation
-        
+    struct OperationEater {
         var topLevelOperations = [Operation]()
         var operations = [Operation]()
         var isOr = false
@@ -61,14 +63,13 @@ public enum Parser {
         }        
     }
     
-    typealias Lexed<G : Grapheme> = Lexer.Lexed<G>
-    typealias LexedIterator<G : Grapheme> = IteratorProtocol<Lexed<G>>
-    typealias Operation<G : Grapheme> = Automaton<G>.Operation
+    typealias Lexed = Lexer<G>.Lexed
+    typealias LexedIterator = IteratorProtocol<Lexed>
     
-    static func parse<G>(lexedList: [Lexed<G>]) throws -> Automaton<G> {
-        var graphemes = [G]()
+    static func parse(lexedList: [Lexed]) throws -> A {
+        var graphemes = GP()
         
-        var eater = OperationEater<G>()
+        var eater = OperationEater()
         var groupCount = 0
         
         var cursor = lexedList.makeIterator()
@@ -119,14 +120,14 @@ public enum Parser {
         }
     }
     
-    enum CommonSwitch<G : Grapheme> {
-        case op(Operation<G>)
-        case decorator((inout Operation<G>) -> Void)
+    enum CommonSwitch {
+        case op(Operation)
+        case decorator((inout Operation) -> Void)
         case grapheme(G)
         case notHandled(Lexeme<G>.Reserved)
     }
     
-    static func commonSwitch<G>(lexed: Lexed<G>, lexedList: inout some LexedIterator<G>, graphemes: inout [G], groupCount: inout Int) throws -> CommonSwitch<G> {
+    static func commonSwitch(lexed: Lexed, lexedList: inout some LexedIterator, graphemes: inout GP, groupCount: inout Int) throws -> CommonSwitch {
         switch lexed.lexeme {
         case let .reserved(reserved):
             switch reserved {
@@ -172,27 +173,27 @@ public enum Parser {
         }
     }
     
-    static func repeater<G>(times: Automaton<G>.Repeater.Times, isGreedy: Bool) -> (inout Operation<G>) -> Void {
+    static func repeater(times: A.Repeater.Times, isGreedy: Bool) -> (inout Operation) -> Void {
         { oldOp in
             oldOp = .repeater(.init(child: oldOp, times: times, isGreedy: isGreedy))
         }
     }
     
-    static func repeatZeroOrMore<G>() -> (inout Operation<G>) -> Void {
+    static func repeatZeroOrMore() -> (inout Operation) -> Void {
         repeater(times: .atLeast(0), isGreedy: true)
     }
     
-    static func repeatOneOrMore<G>() -> (inout Operation<G>) -> Void {
+    static func repeatOneOrMore() -> (inout Operation) -> Void {
         repeater(times: .atLeast(1), isGreedy: true)
     }
     
-    static func repeatZeroOrOne<G>() -> (inout Operation<G>) -> Void {
+    static func repeatZeroOrOne() -> (inout Operation) -> Void {
         repeater(times: .atMost(1), isGreedy: true)
     }
     
-    static func parseGroupCommon<G>(lexedList: inout some LexedIterator<G>, groupCount: inout Int) throws -> Automaton<G>.Grouper {
-        var graphemes = [G]()
-        var eater = OperationEater<G>()
+    static func parseGroupCommon(lexedList: inout some LexedIterator, groupCount: inout Int) throws -> A.Grouper {
+        var graphemes = GP()
+        var eater = OperationEater()
     outer:
         while let lexed = lexedList.next() {
             let result = try commonSwitch(lexed: lexed, lexedList: &lexedList, graphemes: &graphemes, groupCount: &groupCount)
@@ -240,27 +241,27 @@ public enum Parser {
         }
     }
     
-    static func parseGroup<G>(lexedList: inout some LexedIterator<G>, groupCount: inout Int) throws -> Operation<G> {
+    static func parseGroup(lexedList: inout some LexedIterator, groupCount: inout Int) throws -> Operation {
         groupCount += 1
         let oldGroupCount = groupCount
         let grouper = try parseGroupCommon(lexedList: &lexedList, groupCount: &groupCount)
         return .group(grouper, oldGroupCount)
     }
     
-    static func parseNonCapturingGroup<G>(lexedList: inout some LexedIterator<G>, groupCount: inout Int) throws -> Operation<G> {
+    static func parseNonCapturingGroup(lexedList: inout some LexedIterator, groupCount: inout Int) throws -> Operation {
         let grouper = try parseGroupCommon(lexedList: &lexedList, groupCount: &groupCount)
         return .group(grouper, nil)
     }
     
-    static func parseMatch<G>(lexedList: inout some LexedIterator<G>) throws -> Operation<G> {
+    static func parseMatch(lexedList: inout some LexedIterator) throws -> Operation {
         try .match(parseMatchCommon(lexedList: &lexedList))
     }
         
-    static func parseNotMatch<G>(lexedList: inout some LexedIterator<G>) throws -> Operation<G> {
+    static func parseNotMatch(lexedList: inout some LexedIterator) throws -> Operation {
         try .notMatch(parseMatchCommon(lexedList: &lexedList))
     }
     
-    static func parseMatchCommon<G>(lexedList: inout some LexedIterator<G>) throws -> (G) -> Bool {
+    static func parseMatchCommon(lexedList: inout some LexedIterator) throws -> (G) -> Bool {
         var matcher = G.matcher()
         
         while let lexed = lexedList.next() {
