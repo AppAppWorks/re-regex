@@ -5,6 +5,24 @@
 //  Created by Lau Chun Kai on 27/2/2024.
 //
 
+func devPrint(_ any: Any...) {
+    #if DEBUG
+    for a in any {
+        print(a, terminator: "")
+    }
+    print()
+    #endif
+}
+
+func devPrint(graphemes: some Graphemes, _ any: Any...) {
+    #if DEBUG
+    for a in any {
+        print(a, terminator: "")
+    }
+    print(" at \(graphemes)")
+    #endif
+}
+
 struct Automaton<GS : Graphemes, GP : GraphemePattern> where GS.Element == GP.Element {
     typealias G = GS.Element
     

@@ -6,6 +6,12 @@
 //
 
 public protocol Grapheme : Equatable {
+    var isLowercase: Bool { get }
+    
+    var isUppercase: Bool { get }
+    
+    var isLetter: Bool { get }
+    
     var isAlphanumeric: Bool { get }
     
     var isNumber: Bool { get }
@@ -27,13 +33,17 @@ public protocol Grapheme : Equatable {
     init(ascii: Unicode.Scalar)
 }
 
-public protocol GraphemePattern<Element> : RangeReplaceableCollection where Element : Grapheme {
+public protocol GraphemePattern<Element> : RangeReplaceableCollection, Equatable where Element : Grapheme {
     
     init()
     
     init(_ s: String)
     
     mutating func append(_ element: Element)
+    
+    func string() -> String
+    
+    var positiveInteger: Int? { get }
 }
 
 public protocol Graphemes<Element> : Sequence where Element : Grapheme {
@@ -54,6 +64,8 @@ public protocol Graphemes<Element> : Sequence where Element : Grapheme {
     
     var isEmpty: Bool { get }
     
+    var eot: SubSequence { get }
+    
     subscript(range: some RangeExpression<Index>) -> String { get }
     
     static func convertToGraphemes(s: String) -> Self
@@ -64,6 +76,8 @@ public protocol StringConvertibleCollection : Collection where SubSequence : Str
     init(s: String)
     
     subscript(range: some RangeExpression<Index>) -> String { get }
+    
+    func string() -> String
 }
 
 protocol CollectionGraphemes<C> : Graphemes where Element : Grapheme, Element == C.Element, SubSequence : CollectionGraphemes<C.SubSequence> {
@@ -105,7 +119,7 @@ extension CollectionGraphemes {
     }
 }
 
-public struct NoOpGraphemes<C : StringConvertibleCollection> : Graphemes, CollectionGraphemes where C.Element : Grapheme {
+public struct NoOpGraphemes<C : StringConvertibleCollection> : Graphemes, CollectionGraphemes, CustomStringConvertible where C.Element : Grapheme {
     public typealias Element = C.Element
     public typealias Iterator = C.Iterator
     
@@ -140,9 +154,17 @@ public struct NoOpGraphemes<C : StringConvertibleCollection> : Graphemes, Collec
     public static func convertToGraphemes(s: String) -> Self {
         .init(c: .init(s: s))
     }
+    
+    public var description: String {
+        "[0]\(c.string())"
+    }
+    
+    public var eot: SubSequence {
+        .init(c: c[c.endIndex...], offset: 0)
+    }
 }
 
-public struct NoOpSubGraphemes<C : StringConvertibleCollection> : Graphemes, CollectionGraphemes where C.Element : Grapheme, C == C.SubSequence {
+public struct NoOpSubGraphemes<C : StringConvertibleCollection> : Graphemes, CollectionGraphemes, CustomStringConvertible where C.Element : Grapheme, C == C.SubSequence {
     public typealias Element = C.Element
     public typealias Iterator = C.Iterator
     
@@ -163,6 +185,14 @@ public struct NoOpSubGraphemes<C : StringConvertibleCollection> : Graphemes, Col
     
     public static func convertToGraphemes(s: String) -> Self {
         fatalError()
+    }
+    
+    public var description: String {
+        "[\(offset)]\(c.string())"
+    }
+    
+    public var eot: NoOpSubGraphemes<C> {
+        .init(c: c[c.endIndex...], offset: 0)
     }
 }
 
@@ -192,6 +222,10 @@ extension String : StringConvertibleCollection {
         let ss: Substring = self[range]
         return String(ss)
     }
+    
+    public func string() -> String {
+        self
+    }
 }
 
 extension Substring : StringConvertibleCollection {
@@ -203,11 +237,19 @@ extension Substring : StringConvertibleCollection {
         let ss: Substring = self[range]
         return String(ss)
     }
+    
+    public func string() -> String {
+        String(self)
+    }
 }
 
 extension String : GraphemePattern {
     public mutating func append(_ element: Character) {
         insert(element, at: endIndex)
+    }
+    
+    public var positiveInteger: Int? {
+        Int(self, radix: 10)
     }
 }
 
@@ -279,6 +321,10 @@ extension [UInt8] : StringConvertibleCollection {
     public subscript(range: some RangeExpression<Index>) -> String {
         String(decoding: self[range], as: UTF8.self)
     }
+    
+    public func string() -> String {
+        String(decoding: self, as: UTF8.self)
+    }
 }
 
 extension ArraySlice<UInt8> : StringConvertibleCollection {
@@ -290,15 +336,35 @@ extension ArraySlice<UInt8> : StringConvertibleCollection {
     public subscript(range: some RangeExpression<Index>) -> String {
         String(decoding: self[range], as: UTF8.self)
     }
+    
+    public func string() -> String {
+        String(decoding: self, as: UTF8.self)
+    }
 }
 
 extension [UInt8] : GraphemePattern {
     public init(_ s: String) {
         self.init(s.utf8)
     }
+    
+    public var positiveInteger: Int? {
+        Int(String(decoding: self, as: UTF8.self), radix: 10)
+    }
 }
 
 extension UInt8 : Grapheme {
+    public var isLowercase: Bool {
+        "a"..."z" ~= self
+    }
+    
+    public var isUppercase: Bool {
+        "A"..."Z" ~= self
+    }
+    
+    public var isLetter: Bool {
+        isLowercase || isUppercase
+    }
+    
     public typealias Pattern = [UInt8]
     
     public static func convertToPatterns(s: String) -> [UInt8] {
